@@ -6,73 +6,52 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/io/pcd_io.h>
 #include <filesystem>
-#include <chrono>
 
 class SensorDataSaverNode : public rclcpp::Node {
 public:
   SensorDataSaverNode()
-  : Node("sensor_data_saver_node"),
-    image_counter_(0)
-  {
-    declare_parameter("save_dir", "data");
-    get_parameter("save_dir", save_dir_);
+  : Node("sensor_data_saver_node"), frame_count_(0) {
+    declare_parameter("image_topic", "/camera/image_raw");
+    declare_parameter("lidar_topic", "/lidar/points");
+    declare_parameter("save_rate", 5);
+    get_parameter("image_topic", image_topic_);
+    get_parameter("lidar_topic", lidar_topic_);
+    get_parameter("save_rate", save_rate_);
 
-    std::filesystem::create_directories(save_dir_);
+    image_sub_ = create_subscription<sensor_msgs::msg::Image>(
+      image_topic_, 10, std::bind(&SensorDataSaverNode::image_callback, this, std::placeholders::_1));
+    lidar_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+      lidar_topic_, 10, std::bind(&SensorDataSaverNode::lidar_callback, this, std::placeholders::_1));
 
-    image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-      "/camera/image_raw", 10,
-      std::bind(&SensorDataSaverNode::image_callback, this, std::placeholders::_1));
-
-    lidar_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/lidar/points", 10,
-      std::bind(&SensorDataSaverNode::lidar_callback, this, std::placeholders::_1));
-
-    RCLCPP_INFO(this->get_logger(), "📸 Saving data to: %s", save_dir_.c_str());
+    std::filesystem::create_directories("data/images");
+    std::filesystem::create_directories("data/lidar");
   }
 
 private:
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
-    last_image_ = cv_bridge::toCvCopy(msg, "bgr8")->image;
-    image_stamp_ = msg->header.stamp;
-    try_save();
+    if (frame_count_ % save_rate_ == 0) {
+      std::string filename = "data/images/frame_" + std::to_string(frame_count_) + ".png";
+      cv::imwrite(filename, cv_bridge::toCvShare(msg, "bgr8")->image);
+      RCLCPP_INFO(this->get_logger(), "📷 Saved %s", filename.c_str());
+    }
+    frame_count_++;
   }
 
   void lidar_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-    last_cloud_ = *msg;
-    lidar_stamp_ = msg->header.stamp;
-    try_save();
-  }
-
-  void try_save() {
-    if (!last_cloud_.data.empty() && !last_image_.empty() &&
-        lidar_stamp_.sec == image_stamp_.sec &&
-        std::abs(lidar_stamp_.nanosec - image_stamp_.nanosec) < 1e7)
-    {
-      std::stringstream name;
-      name << save_dir_ << "/frame_" << image_counter_;
-
-      std::string image_path = name.str() + ".png";
-      std::string cloud_path = name.str() + ".pcd";
-
-      cv::imwrite(image_path, last_image_);
+    if (frame_count_ % save_rate_ == 0) {
       pcl::PCLPointCloud2 cloud;
-      pcl_conversions::toPCL(last_cloud_, cloud);
-      pcl::io::savePCDFileBinary(cloud_path, cloud);
-
-      RCLCPP_INFO(this->get_logger(), "💾 Saved %s.[png+pcd]", name.str().c_str());
-      image_counter_++;
+      pcl_conversions::toPCL(*msg, cloud);
+      std::string filename = "data/lidar/frame_" + std::to_string(frame_count_) + ".pcd";
+      pcl::io::savePCDFileBinary(filename, cloud);
+      RCLCPP_INFO(this->get_logger(), "🧊 Saved %s", filename.c_str());
     }
   }
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub_;
-
-  cv::Mat last_image_;
-  sensor_msgs::msg::PointCloud2 last_cloud_;
-  rclcpp::Time image_stamp_;
-  rclcpp::Time lidar_stamp_;
-  std::string save_dir_;
-  int image_counter_;
+  std::string image_topic_, lidar_topic_;
+  int save_rate_;
+  int frame_count_;
 };
 
 int main(int argc, char **argv) {
