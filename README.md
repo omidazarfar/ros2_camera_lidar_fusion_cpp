@@ -15,44 +15,6 @@ This repository provides a complete **ROS 2 (C++) pipeline** for calibrating and
 
 ---
 
-## 📁 Project Structure
-
-ros2_camera_lidar_fusion_cpp/
-├── config/ # YAML parameter files
-│ └── general.yaml # Master config for all nodes
-├── data/ # Generated: raw frames, selections, fused results
-│ ├── images/
-│ ├── lidar/
-│ ├── selected/
-│ └── fused/
-├── include/ # Optional headers
-├── launch/ # Launch files (optional)
-├── src/ # All 5 ROS 2 nodes (C++)
-├── CMakeLists.txt
-├── package.xml
-└── README.md
-
-yaml
-Copy
-Edit
-
----
-
-## 🔧 Configuration
-
-**`config/general.yaml`** defines all the topics and paths:
-
-```yaml
-camera_topic: "/camera/image_raw"
-lidar_topic: "/lidar/points"
-image_directory: "data/images"
-lidar_directory: "data/lidar"
-selected_image: "data/selected/image.png"
-selected_lidar: "data/selected/lidar.pcd"
-camera_intrinsics_file: "config/camera_intrinsics.yaml"
-extrinsics_file: "config/extrinsics.yaml"
-All nodes automatically load their parameters from this file.
-
 🚀 How to Use
 1. Build the Package
 bash
