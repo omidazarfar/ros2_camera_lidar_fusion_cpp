@@ -2,10 +2,6 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/core.hpp>
-#include <opencv2/calib3d.hpp>
-#include <opencv2/imgproc.hpp>
-#include <opencv2/highgui.hpp>
 #include <filesystem>
 
 class IntrinsicCalibrationNode : public rclcpp::Node {
@@ -16,33 +12,31 @@ public:
     collected_frames_(0),
     max_frames_(15),
     pattern_size_(9, 6),
-    square_size_(0.025)  // 2.5 cm square size
-  {
-    image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-      "/camera/image_raw", 10,
-      std::bind(&IntrinsicCalibrationNode::image_callback, this, std::placeholders::_1));
+    square_size_(0.025) {
 
-    RCLCPP_INFO(this->get_logger(), "🔍 Waiting for checkerboard images...");
+    declare_parameter("image_topic", "/camera/image_raw");
+    get_parameter("image_topic", image_topic_);
+
+    image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+      image_topic_, 10, std::bind(&IntrinsicCalibrationNode::image_callback, this, std::placeholders::_1));
+
+    RCLCPP_INFO(this->get_logger(), "📸 Subscribed to: %s", image_topic_.c_str());
   }
 
 private:
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
     cv::Mat image = cv_bridge::toCvShare(msg, "bgr8")->image;
-
     std::vector<cv::Point2f> corners;
-    bool found = cv::findChessboardCorners(image, pattern_size_, corners,
-                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
+    bool found = cv::findChessboardCorners(image, pattern_size_, corners);
 
     if (found) {
       cv::drawChessboardCorners(image, pattern_size_, corners, found);
       image_points_.push_back(corners);
       object_points_.push_back(create_object_points());
       collected_frames_++;
-
-      RCLCPP_INFO(this->get_logger(), "✅ Frame %d/%d added", collected_frames_, max_frames_);
     }
 
-    cv::imshow("Checkerboard View", image);
+    cv::imshow("Calibration", image);
     cv::waitKey(1);
 
     if (collected_frames_ >= max_frames_) {
@@ -61,8 +55,8 @@ private:
 
   void calibrate_camera(cv::Size image_size) {
     cv::Mat camera_matrix, dist_coeffs, rvecs, tvecs;
-    double error = cv::calibrateCamera(object_points_, image_points_,
-                        image_size, camera_matrix, dist_coeffs, rvecs, tvecs);
+    double error = cv::calibrateCamera(object_points_, image_points_, image_size,
+                                       camera_matrix, dist_coeffs, rvecs, tvecs);
 
     std::filesystem::create_directories("config");
     cv::FileStorage fs("config/camera_intrinsics.yaml", cv::FileStorage::WRITE);
@@ -71,10 +65,12 @@ private:
     fs << "reprojection_error" << error;
     fs.release();
 
-    RCLCPP_INFO(this->get_logger(), "📷 Intrinsic calibration saved to config/camera_intrinsics.yaml");
+    RCLCPP_INFO(this->get_logger(), "✅ Intrinsic calibration saved.");
   }
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+  std::string image_topic_;
+
   cv::Size pattern_size_;
   float square_size_;
   int image_count_;
