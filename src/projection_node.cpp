@@ -1,98 +1,95 @@
 #include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <filesystem>
+#include <pcl/io/pcd_io.h>
+#include <Eigen/Dense>
 
 class ProjectionNode : public rclcpp::Node {
 public:
   ProjectionNode() : Node("projection_node") {
-    declare_parameter("intrinsic_yaml", "config/camera_intrinsics.yaml");
-    declare_parameter("extrinsic_yaml", "config/extrinsic_calib.yaml");
+    declare_parameter("camera_intrinsics_file", "config/camera_intrinsics.yaml");
+    declare_parameter("extrinsics_file", "config/extrinsics.yaml");
+    declare_parameter("lidar_file", "data/selected/lidar.pcd");
+    declare_parameter("image_file", "data/selected/image.png");
 
-    get_parameter("intrinsic_yaml", intrinsic_path_);
-    get_parameter("extrinsic_yaml", extrinsic_path_);
+    get_parameter("camera_intrinsics_file", intrinsics_path_);
+    get_parameter("extrinsics_file", extrinsics_path_);
+    get_parameter("lidar_file", lidar_path_);
+    get_parameter("image_file", image_path_);
 
-    if (!load_calibration()) {
-      RCLCPP_ERROR(this->get_logger(), "❌ Failed to load calibration files.");
-      rclcpp::shutdown();
-    }
+    if (!load_parameters()) return;
 
-    image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-      "/camera/image_raw", 10,
-      std::bind(&ProjectionNode::image_callback, this, std::placeholders::_1));
-
-    lidar_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-      "/lidar/points", 10,
-      std::bind(&ProjectionNode::lidar_callback, this, std::placeholders::_1));
-
-    RCLCPP_INFO(this->get_logger(), "📡 Projecting LiDAR onto camera stream...");
+    project_points();
   }
 
 private:
-  bool load_calibration() {
-    cv::FileStorage fs1(intrinsic_path_, cv::FileStorage::READ);
-    cv::FileStorage fs2(extrinsic_path_, cv::FileStorage::READ);
-    if (!fs1.isOpened() || !fs2.isOpened()) return false;
+  bool load_parameters() {
+    cv::FileStorage fs1(intrinsics_path_, cv::FileStorage::READ);
+    if (!fs1.isOpened()) {
+      RCLCPP_ERROR(this->get_logger(), "❌ Cannot open camera intrinsics file.");
+      return false;
+    }
+    fs1["camera_matrix"] >> K_;
+    fs1["distortion_coefficients"] >> dist_;
+    fs1.release();
 
-    fs1["camera_matrix"] >> camera_matrix_;
-    fs1["distortion_coefficients"] >> dist_coeffs_;
-    fs2["rotation_vector"] >> rvec_;
-    fs2["translation_vector"] >> tvec_;
+    cv::FileStorage fs2(extrinsics_path_, cv::FileStorage::READ);
+    if (!fs2.isOpened()) {
+      RCLCPP_ERROR(this->get_logger(), "❌ Cannot open extrinsics file.");
+      return false;
+    }
+    fs2["extrinsic_matrix"] >> extrinsics_;
+    fs2.release();
 
-    cv::Rodrigues(rvec_, rmat_);
-    fs1.release(); fs2.release();
     return true;
   }
 
-  void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
-    latest_image_ = cv_bridge::toCvCopy(msg, "bgr8")->image;
-    image_ready_ = true;
-    try_project();
-  }
-
-  void lidar_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-    pcl::fromROSMsg(*msg, cloud_);
-    cloud_ready_ = true;
-    try_project();
-  }
-
-  void try_project() {
-    if (!image_ready_ || !cloud_ready_) return;
-
-    cv::Mat image = latest_image_.clone();
-    for (const auto& pt : cloud_.points) {
-      cv::Mat pt_lidar = (cv::Mat_<double>(3,1) << pt.x, pt.y, pt.z);
-      cv::Mat pt_cam = rmat_ * pt_lidar + tvec_;
-
-      std::vector<cv::Point3f> object_point = {cv::Point3f(pt_cam)};
-      std::vector<cv::Point2f> projected_point;
-      cv::projectPoints(object_point, cv::Vec3d(0,0,0), cv::Vec3d(0,0,0),
-                        camera_matrix_, dist_coeffs_, projected_point);
-
-      cv::Point2f p = projected_point[0];
-      if (p.x > 0 && p.x < image.cols && p.y > 0 && p.y < image.rows)
-        cv::circle(image, p, 2, cv::Scalar(0, 255, 0), -1);
+  void project_points() {
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    if (pcl::io::loadPCDFile<pcl::PointXYZ>(lidar_path_, *cloud) == -1) {
+      RCLCPP_ERROR(this->get_logger(), "❌ Failed to load LiDAR file.");
+      return;
     }
 
-    cv::imshow("LiDAR Projection", image);
-    cv::waitKey(1);
+    cv::Mat image = cv::imread(image_path_);
+    if (image.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "❌ Failed to load image.");
+      return;
+    }
+
+    for (const auto& point : cloud->points) {
+      cv::Mat pt3D = (cv::Mat_<float>(4,1) << point.x, point.y, point.z, 1.0);
+      cv::Mat pt_cam = extrinsics_ * pt3D;
+      if (pt_cam.at<float>(2,0) <= 0) continue;
+
+      float x = pt_cam.at<float>(0,0) / pt_cam.at<float>(2,0);
+      float y = pt_cam.at<float>(1,0) / pt_cam.at<float>(2,0);
+
+      cv::Mat pt2D;
+      cv::projectPoints(cv::Mat(cv::Vec3f(x, y, 1.0)), cv::Mat::zeros(3,1,CV_64F),
+                        cv::Mat::zeros(3,1,CV_64F), K_, dist_, pt2D);
+
+      int u = static_cast<int>(pt2D.at<cv::Point2f>(0).x);
+      int v = static_cast<int>(pt2D.at<cv::Point2f>(0).y);
+
+      if (u >= 0 && v >= 0 && u < image.cols && v < image.rows) {
+        cv::circle(image, cv::Point(u,v), 2, cv::Scalar(0,0,255), -1);
+      }
+    }
+
+    cv::imwrite("data/fused/fused_projection.png", image);
+    RCLCPP_INFO(this->get_logger(), "🎯 Fused image saved to data/fused/fused_projection.png");
   }
 
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub_;
-
-  std::string intrinsic_path_, extrinsic_path_;
-  cv::Mat camera_matrix_, dist_coeffs_, rvec_, tvec_, rmat_;
-  pcl::PointCloud<pcl::PointXYZ> cloud_;
-  cv::Mat latest_image_;
-  bool image_ready_ = false;
-  bool cloud_ready_ = false;
+  std::string intrinsics_path_, extrinsics_path_, lidar_path_, image_path_;
+  cv::Mat K_, dist_, extrinsics_;
 };
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<ProjectionNode>());
   rclcpp::shutdown();
