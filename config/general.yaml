@@ -1,3 +1,8 @@
-image_topic: /camera/image_raw
-lidar_topic: /lidar/points
-save_rate: 5
+camera_topic: "/camera/image_raw"
+lidar_topic: "/lidar/points"
+image_directory: "data/images"
+lidar_directory: "data/lidar"
+selected_image: "data/selected/image.png"
+selected_lidar: "data/selected/lidar.pcd"
+camera_intrinsics_file: "config/camera_intrinsics.yaml"
+extrinsics_file: "config/extrinsics.yaml"
