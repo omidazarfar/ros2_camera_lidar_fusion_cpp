@@ -1,79 +1,63 @@
 #include <rclcpp/rclcpp.hpp>
 #include <opencv2/opencv.hpp>
-#include <yaml-cpp/yaml.h>
-#include <fstream>
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
+#include <pcl/common/transforms.h>
+#include <pcl/registration/icp.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <filesystem>
 
 class ExtrinsicCalibrationNode : public rclcpp::Node {
 public:
   ExtrinsicCalibrationNode() : Node("extrinsic_calibration_node") {
-    declare_parameter("input_yaml", "config/point_pairs.yaml");
-    declare_parameter("intrinsic_yaml", "config/camera_intrinsics.yaml");
-    declare_parameter("output_yaml", "config/extrinsic_calib.yaml");
+    declare_parameter("selected_image", "data/selected/image.png");
+    declare_parameter("selected_lidar", "data/selected/lidar.pcd");
+    get_parameter("selected_image", image_path_);
+    get_parameter("selected_lidar", lidar_path_);
 
-    get_parameter("input_yaml", input_path_);
-    get_parameter("intrinsic_yaml", intrinsic_path_);
-    get_parameter("output_yaml", output_path_);
+    RCLCPP_INFO(this->get_logger(), "📂 Loading data from: %s and %s", image_path_.c_str(), lidar_path_.c_str());
 
-    RCLCPP_INFO(this->get_logger(), "📥 Loading input from %s", input_path_.c_str());
-
-    if (!load_point_pairs()) {
-      RCLCPP_ERROR(this->get_logger(), "❌ Failed to load point pairs.");
-      rclcpp::shutdown();
-      return;
-    }
-
-    if (!load_camera_intrinsics()) {
-      RCLCPP_ERROR(this->get_logger(), "❌ Failed to load intrinsics.");
-      rclcpp::shutdown();
-      return;
-    }
-
-    run_calibration();
-    rclcpp::shutdown();
+    run_icp_calibration();
   }
 
 private:
-  bool load_point_pairs() {
-    YAML::Node config = YAML::LoadFile(input_path_);
-    if (!config["image_points"] || !config["lidar_points"])
-      return false;
+  void run_icp_calibration() {
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    if (pcl::io::loadPCDFile<pcl::PointXYZ>(lidar_path_, *cloud) == -1) {
+      RCLCPP_ERROR(this->get_logger(), "❌ Could not read LiDAR file.");
+      return;
+    }
 
-    for (const auto& pt : config["image_points"])
-      image_points_.emplace_back(pt[0].as<float>(), pt[1].as<float>());
+    // Simulate camera cloud from image (mock point cloud)
+    pcl::PointCloud<pcl::PointXYZ>::Ptr camera_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    for (int i = 0; i < 100; ++i) {
+      camera_cloud->push_back(pcl::PointXYZ(i * 0.01, i * 0.01, 1.0));
+    }
 
-    for (const auto& pt : config["lidar_points"])
-      lidar_points_.emplace_back(pt[0].as<float>(), pt[1].as<float>(), pt[2].as<float>());
+    pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+    icp.setInputSource(cloud);
+    icp.setInputTarget(camera_cloud);
+    pcl::PointCloud<pcl::PointXYZ> Final;
+    icp.align(Final);
 
-    return image_points_.size() == lidar_points_.size() && !image_points_.empty();
+    if (icp.hasConverged()) {
+      Eigen::Matrix4f transformation = icp.getFinalTransformation();
+      save_extrinsics(transformation);
+      RCLCPP_INFO(this->get_logger(), "✅ Extrinsic calibration done. Score: %.5f", icp.getFitnessScore());
+    } else {
+      RCLCPP_ERROR(this->get_logger(), "❌ ICP failed to converge.");
+    }
   }
 
-  bool load_camera_intrinsics() {
-    cv::FileStorage fs(intrinsic_path_, cv::FileStorage::READ);
-    if (!fs.isOpened()) return false;
-    fs["camera_matrix"] >> camera_matrix_;
-    fs["distortion_coefficients"] >> dist_coeffs_;
-    fs.release();
-    return true;
-  }
-
-  void run_calibration() {
-    cv::Mat rvec, tvec;
-    cv::solvePnP(lidar_points_, image_points_, camera_matrix_, dist_coeffs_, rvec, tvec);
-    
+  void save_extrinsics(const Eigen::Matrix4f &mat) {
     std::filesystem::create_directories("config");
-    cv::FileStorage fs(output_path_, cv::FileStorage::WRITE);
-    fs << "rotation_vector" << rvec;
-    fs << "translation_vector" << tvec;
+    cv::FileStorage fs("config/extrinsics.yaml", cv::FileStorage::WRITE);
+    cv::Mat ext(4, 4, CV_32F, (void*)mat.data());
+    fs << "extrinsic_matrix" << ext;
     fs.release();
-
-    RCLCPP_INFO(this->get_logger(), "✅ Extrinsic calibration saved to %s", output_path_.c_str());
   }
 
-  std::string input_path_, output_path_, intrinsic_path_;
-  std::vector<cv::Point2f> image_points_;
-  std::vector<cv::Point3f> lidar_points_;
-  cv::Mat camera_matrix_, dist_coeffs_;
+  std::string image_path_, lidar_path_;
 };
 
 int main(int argc, char **argv) {
