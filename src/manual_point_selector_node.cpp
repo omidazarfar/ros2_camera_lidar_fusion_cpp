@@ -1,96 +1,89 @@
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_types.h>
+#include <pcl/io/pcd_io.h>
 #include <filesystem>
-#include <fstream>
-#include <yaml-cpp/yaml.h>
+#include <vector>
+#include <string>
+#include <algorithm>
 
-class ManualPointSelectorNode : public rclcpp::Node {
+class ManualSelectorNode : public rclcpp::Node {
 public:
-  ManualPointSelectorNode() : Node("manual_point_selector_node") {
-    declare_parameter("image_path", "data/frame_0.png");
-    declare_parameter("output_yaml", "config/point_pairs.yaml");
+  ManualSelectorNode()
+  : Node("manual_selector_node"),
+    image_index_(0),
+    lidar_index_(0) {
 
-    get_parameter("image_path", image_path_);
-    get_parameter("output_yaml", output_path_);
+    declare_parameter("image_directory", "data/images");
+    declare_parameter("lidar_directory", "data/lidar");
+    get_parameter("image_directory", image_dir_);
+    get_parameter("lidar_directory", lidar_dir_);
 
-    RCLCPP_INFO(this->get_logger(), "📍 Loading image: %s", image_path_.c_str());
-    image_ = cv::imread(image_path_);
-    if (image_.empty()) {
-      RCLCPP_ERROR(this->get_logger(), "❌ Failed to load image");
+    load_file_lists();
+
+    if (image_files_.empty() || lidar_files_.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "❌ No data found to select from.");
       rclcpp::shutdown();
     }
 
-    RCLCPP_INFO(this->get_logger(), "🖱️ Click points on the image. Press 'q' when done.");
-    cv::namedWindow("Select Points");
-    cv::setMouseCallback("Select Points", on_mouse, this);
+    cv::namedWindow("Image Viewer", cv::WINDOW_NORMAL);
+    show_current();
 
-    while (true) {
-      cv::Mat temp = image_.clone();
-      for (const auto& pt : clicked_points_)
-        cv::circle(temp, pt, 5, cv::Scalar(0, 255, 0), -1);
-      cv::imshow("Select Points", temp);
-
-      char key = cv::waitKey(10);
-      if (key == 'q' || key == 27)
-        break;
-    }
-
-    collect_3d_points();
-    save_points();
-    rclcpp::shutdown();
+    RCLCPP_INFO(this->get_logger(), "🧩 Manual selector initialized. Press [s] to save, [n] for next, [q] to quit.");
+    run_loop();
   }
 
 private:
-  static void on_mouse(int event, int x, int y, int, void* userdata) {
-    if (event == cv::EVENT_LBUTTONDOWN) {
-      auto* self = static_cast<ManualPointSelectorNode*>(userdata);
-      self->clicked_points_.emplace_back(x, y);
-      RCLCPP_INFO(self->get_logger(), "🟢 Selected 2D point: (%d, %d)", x, y);
+  void load_file_lists() {
+    for (const auto &entry : std::filesystem::directory_iterator(image_dir_))
+      if (entry.path().extension() == ".png") image_files_.push_back(entry.path().string());
+
+    for (const auto &entry : std::filesystem::directory_iterator(lidar_dir_))
+      if (entry.path().extension() == ".pcd") lidar_files_.push_back(entry.path().string());
+
+    std::sort(image_files_.begin(), image_files_.end());
+    std::sort(lidar_files_.begin(), lidar_files_.end());
+  }
+
+  void show_current() {
+    if (image_index_ < image_files_.size()) {
+      cv::Mat img = cv::imread(image_files_[image_index_]);
+      cv::imshow("Image Viewer", img);
     }
   }
 
-  void collect_3d_points() {
-    std::cout << "🧠 Now enter matching 3D points for each 2D image point (format: x y z):" << std::endl;
-    for (size_t i = 0; i < clicked_points_.size(); ++i) {
-      float x, y, z;
-      std::cout << "Point " << i + 1 << ": ";
-      std::cin >> x >> y >> z;
-      corresponding_3d_points_.emplace_back(x, y, z);
+  void run_loop() {
+    char key;
+    while (rclcpp::ok()) {
+      key = static_cast<char>(cv::waitKey(0));
+
+      if (key == 'q') {
+        RCLCPP_INFO(this->get_logger(), "👋 Exiting manual selector.");
+        break;
+      } else if (key == 'n') {
+        image_index_ = std::min(image_index_ + 1, static_cast<int>(image_files_.size() - 1));
+        lidar_index_ = std::min(lidar_index_ + 1, static_cast<int>(lidar_files_.size() - 1));
+        show_current();
+      } else if (key == 's') {
+        std::filesystem::copy(image_files_[image_index_], "data/selected/image.png", std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::copy(lidar_files_[lidar_index_], "data/selected/lidar.pcd", std::filesystem::copy_options::overwrite_existing);
+        RCLCPP_INFO(this->get_logger(), "✅ Selected pair saved.");
+      }
     }
   }
 
-  void save_points() {
-    std::filesystem::create_directories("config");
-    YAML::Emitter out;
-    out << YAML::BeginMap;
-    out << YAML::Key << "image_points" << YAML::Value << YAML::BeginSeq;
-    for (const auto& pt : clicked_points_)
-      out << YAML::Flow << YAML::BeginSeq << pt.x << pt.y << YAML::EndSeq;
-    out << YAML::EndSeq;
-
-    out << YAML::Key << "lidar_points" << YAML::Value << YAML::BeginSeq;
-    for (const auto& pt : corresponding_3d_points_)
-      out << YAML::Flow << YAML::BeginSeq << pt.x << pt.y << pt.z << YAML::EndSeq;
-    out << YAML::EndSeq;
-    out << YAML::EndMap;
-
-    std::ofstream fout(output_path_);
-    fout << out.c_str();
-    fout.close();
-
-    RCLCPP_INFO(this->get_logger(), "✅ Saved point pairs to %s", output_path_.c_str());
-  }
-
-  std::string image_path_;
-  std::string output_path_;
-  cv::Mat image_;
-  std::vector<cv::Point2f> clicked_points_;
-  std::vector<cv::Point3f> corresponding_3d_points_;
+  std::string image_dir_, lidar_dir_;
+  std::vector<std::string> image_files_, lidar_files_;
+  int image_index_, lidar_index_;
 };
-  
+
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ManualPointSelectorNode>());
+  rclcpp::spin(std::make_shared<ManualSelectorNode>());
   rclcpp::shutdown();
   return 0;
 }
