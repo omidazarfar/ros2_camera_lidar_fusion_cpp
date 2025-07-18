@@ -1,21 +1,21 @@
-# 🔁 ROS2 Camera-LiDAR Fusion (C++)
+#  ROS2 Camera-LiDAR Fusion (C++)
 
 This repository provides a complete **ROS 2 (C++) pipeline** for calibrating and fusing data from a camera and LiDAR sensor. It includes intrinsic and extrinsic calibration, manual frame selection, and LiDAR-to-image projection — designed for real-time robotic perception and autonomous systems.
 
 ---
 
-## 📦 Features
+##  Features
 
-- 🔍 **Camera Intrinsic Calibration** using a checkerboard
-- 🌐 **Extrinsic Calibration** with point cloud alignment
-- 🖼️ **Manual Pair Selection** of synchronized image and LiDAR frames
-- 🎯 **Projection** of LiDAR points onto 2D image plane
-- 📁 Full configuration via YAML file
-- ✅ ROS 2 native, C++17-compliant, modular node architecture
+-  **Camera Intrinsic Calibration** using a checkerboard
+-  **Extrinsic Calibration** with point cloud alignment
+-  **Manual Pair Selection** of synchronized image and LiDAR frames
+-  **Projection** of LiDAR points onto 2D image plane
+-  Full configuration via YAML file
+-  ROS 2 native, C++17-compliant, modular node architecture
 
 ---
 
-🚀 How to Use
+ How to Use
 
 1. Build the Package
 
@@ -35,7 +35,7 @@ Step	Node	Description
 
 Launch files (optional) can simplify each of these steps.
 
-📂 Outputs
+ Outputs
 
 camera_intrinsics.yaml	Step 1	Stores camera matrix & distortion coefficients
 images/*.png & lidar/*.pcd	Step 2	Raw synchronized data
@@ -43,7 +43,7 @@ selected/*.pcd & selected/*.png	Step 3	User-selected matching frames
 extrinsics.yaml	Step 4	Transformation from LiDAR to camera
 fused/fused_projection.png	Step 5	Visual projection of 3D points into image plane
 
-🛠 Dependencies
+ Dependencies
 Make sure the following are installed:
 
 sudo apt update
@@ -55,7 +55,7 @@ sudo apt install \
   
 Also install required ROS 2 packages (rclcpp, sensor_msgs, cv_bridge, pcl_conversions, etc.).
 
-🤖 Application
+ Application
 This pipeline is ideal for:
 
 Robotics and SLAM
@@ -66,17 +66,17 @@ Sensor fusion and 3D reconstruction
 
 Object detection pipelines that combine 2D and 3D data
 
-🧠 Notes
+ Notes
 You can press n, s, and q during manual selection.
 
 Be sure your camera is publishing clear images of a checkerboard for intrinsic calibration.
 
 Intrinsic and extrinsic YAMLs must be generated before projection.
 
-📬 Contact
+ Contact
 Maintained by Omid Azarfar
-📧 omid.azarfar95@gmail.com
-🌐 github.com/omidazarfar
+ omid.azarfar95@gmail.com
+ github.com/omidazarfar
 
-📜 License
+ License
 This project is released under the MIT License.
